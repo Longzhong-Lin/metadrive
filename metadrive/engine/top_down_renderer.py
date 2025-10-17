@@ -193,6 +193,7 @@ class TopDownRenderer:
         window=True,
         screen_record=False,
         center_on_map=False,
+        draw_navi_info=False,
     ):
         """
         Launch a top-down renderer for current episode. Usually, it is launched by env.render(mode="topdown") and will
@@ -239,6 +240,8 @@ class TopDownRenderer:
 
             center_on_map: Whether to center the camera on the map. If set to True, the camera will not move with the
             ego car, and the camera position will be fixed at the center of the map.
+
+            draw_navi_info: Whether to draw navigation information overlay, including checkpoints and their properties.
         """
         # doc-end
         # LQY: do not delete the above line !!!!!
@@ -262,6 +265,7 @@ class TopDownRenderer:
         self.contour = draw_contour
         self.semantic_broken_line = semantic_broken_line
         self.no_window = not window
+        self.draw_navi_info = draw_navi_info
 
         if self.show_agent_name:
             pygame.init()
@@ -525,6 +529,9 @@ class TopDownRenderer:
                 )
                 self._deads.append(v)
 
+        # Draw navigation info overlay if enabled
+        self._draw_navi_info_overlay()
+
         v = self.current_track_agent
         canvas = self._frame_canvas
         field = self._screen_canvas.get_size()
@@ -585,6 +592,137 @@ class TopDownRenderer:
                         dest=(new_position[0] - img.get_width() / 2, new_position[1] - img.get_height() / 2),
                         # special_flags=pygame.BLEND_RGBA_MULT
                     )
+
+    def _draw_navi_info_overlay(self):
+        """
+        Draw navigation information overlay on the frame canvas.
+        This visualizes the checkpoints and their properties from the navigation module.
+        """
+        if not self.draw_navi_info:
+            return
+
+        v = self.current_track_agent
+        if v is None or not hasattr(v, 'navigation') or v.navigation is None:
+            return
+
+        # Get navigation info (10 dimensions: 2 checkpoints x 5 properties)
+        try:
+            navi_info = v.navigation.get_navi_info()
+        except:
+            return
+
+        if navi_info is None or len(navi_info) < 10:
+            return
+
+        # Constants from BaseNavigation
+        NAVI_POINT_DIST = 50  # Maximum distance for checkpoint visualization
+
+        # Parse navi info for checkpoint 1 (current)
+        ckpt1_heading_norm = navi_info[0]  # normalized heading projection
+        ckpt1_rhs_norm = navi_info[1]      # normalized right-hand-side projection
+        ckpt1_bendradius = navi_info[2]    # bend radius (0 for straight)
+        ckpt1_dir = navi_info[3]           # direction (0.5 for straight, 0/1 for curves)
+        ckpt1_angle = navi_info[4]         # angle change
+
+        # Parse navi info for checkpoint 2 (next)
+        ckpt2_heading_norm = navi_info[5]
+        ckpt2_rhs_norm = navi_info[6]
+        ckpt2_bendradius = navi_info[7]
+        ckpt2_dir = navi_info[8]
+        ckpt2_angle = navi_info[9]
+
+        # Denormalize positions (reverse the normalization: normalized = (value / NAVI_POINT_DIST + 1) / 2)
+        ckpt1_heading = (ckpt1_heading_norm * 2 - 1) * NAVI_POINT_DIST
+        ckpt1_rhs = (ckpt1_rhs_norm * 2 - 1) * NAVI_POINT_DIST
+        ckpt2_heading = (ckpt2_heading_norm * 2 - 1) * NAVI_POINT_DIST
+        ckpt2_rhs = (ckpt2_rhs_norm * 2 - 1) * NAVI_POINT_DIST
+
+        # Convert from vehicle local coordinates to world coordinates
+        # Local coordinates: +x is heading, +y is right-hand side
+        vehicle_pos = v.position
+        vehicle_heading = v.heading_theta
+
+        # Rotation matrix to convert local to global
+        cos_h = np.cos(vehicle_heading)
+        sin_h = np.sin(vehicle_heading)
+
+        # Checkpoint 1 in world coordinates
+        ckpt1_world_x = vehicle_pos[0] + ckpt1_heading * cos_h - ckpt1_rhs * sin_h
+        ckpt1_world_y = vehicle_pos[1] + ckpt1_heading * sin_h + ckpt1_rhs * cos_h
+
+        # Checkpoint 2 in world coordinates
+        ckpt2_world_x = vehicle_pos[0] + ckpt2_heading * cos_h - ckpt2_rhs * sin_h
+        ckpt2_world_y = vehicle_pos[1] + ckpt2_heading * sin_h + ckpt2_rhs * cos_h
+
+        # Convert to pixel coordinates
+        ckpt1_pix = self._frame_canvas.pos2pix(ckpt1_world_x, ckpt1_world_y)
+        ckpt2_pix = self._frame_canvas.pos2pix(ckpt2_world_x, ckpt2_world_y)
+        vehicle_pix = self._frame_canvas.pos2pix(vehicle_pos[0], vehicle_pos[1])
+
+        # Colors
+        CHECKPOINT1_COLOR = (0, 255, 0)    # Green for current checkpoint
+        CHECKPOINT2_COLOR = (255, 255, 0)  # Yellow for next checkpoint
+        ARROW_COLOR = (0, 200, 255)        # Cyan for arrows
+
+        # Draw arrows from vehicle to checkpoints
+        # Checkpoint 1 arrow (solid)
+        pygame.draw.line(
+            self._frame_canvas,
+            CHECKPOINT1_COLOR,
+            vehicle_pix,
+            ckpt1_pix,
+            3
+        )
+
+        # Checkpoint 2 arrow (dashed - approximate with segments)
+        num_segments = 8
+        for seg in range(0, num_segments, 2):  # Draw every other segment for dashed effect
+            start_ratio = seg / num_segments
+            end_ratio = (seg + 1) / num_segments
+            start_pix = (
+                int(vehicle_pix[0] + (ckpt2_pix[0] - vehicle_pix[0]) * start_ratio),
+                int(vehicle_pix[1] + (ckpt2_pix[1] - vehicle_pix[1]) * start_ratio)
+            )
+            end_pix = (
+                int(vehicle_pix[0] + (ckpt2_pix[0] - vehicle_pix[0]) * end_ratio),
+                int(vehicle_pix[1] + (ckpt2_pix[1] - vehicle_pix[1]) * end_ratio)
+            )
+            pygame.draw.line(
+                self._frame_canvas,
+                CHECKPOINT2_COLOR,
+                start_pix,
+                end_pix,
+                2
+            )
+
+        # Draw checkpoint markers (circles)
+        pygame.draw.circle(
+            self._frame_canvas,
+            CHECKPOINT1_COLOR,
+            ckpt1_pix,
+            8
+        )
+        pygame.draw.circle(
+            self._frame_canvas,
+            (0, 0, 0),  # Black outline
+            ckpt1_pix,
+            8,
+            2
+        )
+
+        pygame.draw.circle(
+            self._frame_canvas,
+            CHECKPOINT2_COLOR,
+            ckpt2_pix,
+            6
+        )
+        pygame.draw.circle(
+            self._frame_canvas,
+            (0, 0, 0),  # Black outline
+            ckpt2_pix,
+            6,
+            2
+        )
 
     def _handle_event(self) -> None:
         """
