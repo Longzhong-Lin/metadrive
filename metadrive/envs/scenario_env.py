@@ -14,6 +14,7 @@ from metadrive.manager.scenario_data_manager import ScenarioDataManager, Scenari
 from metadrive.manager.scenario_light_manager import ScenarioLightManager
 from metadrive.manager.scenario_map_manager import ScenarioMapManager
 from metadrive.manager.scenario_traffic_manager import ScenarioTrafficManager
+from metadrive.manager.unimm_traffic_manager import UniMMTrafficManager
 from metadrive.policy.replay_policy import ReplayEgoCarPolicy
 from metadrive.policy.waypoint_policy import WaypointPolicy
 from metadrive.utils import get_np_random
@@ -45,6 +46,9 @@ SCENARIO_ENV_CONFIG = dict(
 
     # ===== Scenario =====
     no_traffic=False,  # nothing will be generated including objects/pedestrian/vehicles
+    use_unimm_traffic=False,  # Use UniMM for generating traffic flow
+    unimm_checkpoint=None,  # Path to UniMM checkpoint file (required if use_unimm_traffic=True)
+    unimm_device="cuda",  # Device for UniMM model: "cuda" or "cpu"
     no_static_vehicles=False,  # static vehicle will be removed
     no_light=False,  # no traffic light
     reactive_traffic=False,  # turn on to enable idm traffic
@@ -151,7 +155,16 @@ class ScenarioEnv(BaseEnv):
         self.engine.register_manager("data_manager", ScenarioDataManager())
         self.engine.register_manager("map_manager", ScenarioMapManager())
         if not self.config["no_traffic"]:
-            self.engine.register_manager("traffic_manager", ScenarioTrafficManager())
+            # Choose traffic manager based on config
+            if self.config.get("use_unimm_traffic", False):
+                if not self.config.get("unimm_checkpoint"):
+                    raise ValueError(
+                        "unimm_checkpoint must be provided when use_unimm_traffic=True. "
+                        "It should be a path to the UniMM checkpoint file (.ckpt)"
+                    )
+                self.engine.register_manager("traffic_manager", UniMMTrafficManager())
+            else:
+                self.engine.register_manager("traffic_manager", ScenarioTrafficManager())
         if not self.config["no_light"]:
             self.engine.register_manager("light_manager", ScenarioLightManager())
         self.engine.register_manager("curriculum_manager", ScenarioCurriculumManager())
