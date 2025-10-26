@@ -65,19 +65,60 @@ class ReplayManager(BaseManager):
         map_data = self.restore_episode_info["map_data"]
         assert len(map_data) > 0, "Can not find map info in episode data"
 
-        map_config = copy.deepcopy(map_data["map_config"])
-        map_config[BaseMap.GENERATE_TYPE] = MapGenerateMethod.PG_MAP_FILE
-        map_config[BaseMap.GENERATE_CONFIG] = map_data["block_sequence"]
-        if self.engine.map_manager.maps[self.engine.global_seed] is not None:
-            self.current_map = self.engine.map_manager.maps[self.engine.global_seed]
-            assert recursive_equal(
-                self.current_map.get_meta_data()["block_sequence"], map_data["block_sequence"], need_assert=True
-            ), "Loaded data mismatch stored data"
-            self.engine.map_manager.load_map(self.current_map)
+        if "map_config" in map_data and "block_sequence" in map_data:
+            # This is a PGMap (procedurally generated map)
+            map_config = copy.deepcopy(map_data["map_config"])
+            map_config[BaseMap.GENERATE_TYPE] = MapGenerateMethod.PG_MAP_FILE
+            map_config[BaseMap.GENERATE_CONFIG] = map_data["block_sequence"]
+            if self.engine.map_manager.maps[self.engine.global_seed] is not None:
+                self.current_map = self.engine.map_manager.maps[self.engine.global_seed]
+                assert recursive_equal(
+                    self.current_map.get_meta_data()["block_sequence"], map_data["block_sequence"], need_assert=True
+                ), "Loaded data mismatch stored data"
+                self.engine.map_manager.load_map(self.current_map)
+            else:
+                self.current_map = self.spawn_object(
+                    PGMap, map_config=map_config, auto_fill_random_seed=False, force_spawn=True
+                )
         else:
-            self.current_map = self.spawn_object(
-                PGMap, map_config=map_config, auto_fill_random_seed=False, force_spawn=True
-            )
+            # This is a ScenarioMap - load it from the scenario data
+            # For ScenarioEnv replay, we need to ensure the map is loaded from the scenario data
+            if hasattr(self.engine, 'data_manager') and hasattr(self.engine, 'map_manager'):
+                # Import here to avoid circular dependency
+                from metadrive.manager.scenario_map_manager import ScenarioMapManager
+                from metadrive.component.map.scenario_map import ScenarioMap
+
+                # For ScenarioEnv, the map manager needs to be reset to load the correct scenario map
+                if isinstance(self.engine.map_manager, ScenarioMapManager):
+                    # Get the scenario ID from the replay episode info
+                    scenario_index = self.restore_episode_info.get("scenario_index", None)
+                    if scenario_index is None:
+                        scenario_index = self.restore_episode_info.get("global_seed", None)
+
+                    # Ensure the engine's global seed is set correctly for the scenario
+                    if scenario_index is not None:
+                        self.engine.global_random_seed = scenario_index
+
+                    # Reset the map manager to load the scenario map
+                    self.engine.map_manager.reset()
+                    self.current_map = self.engine.map_manager.current_map
+
+                    if self.current_map is None or not isinstance(self.current_map, ScenarioMap):
+                        raise ValueError(
+                            f"Failed to load ScenarioMap for scenario index {scenario_index}. "
+                            "The map_manager did not create a ScenarioMap."
+                        )
+                else:
+                    raise ValueError(
+                        "ScenarioMap replay requires ScenarioMapManager. "
+                        f"Found {type(self.engine.map_manager).__name__} instead."
+                    )
+            else:
+                raise ValueError(
+                    "ScenarioMap replay requires both data_manager and map_manager to be available. "
+                    "Please ensure the environment is properly initialized."
+                )
+
         self.current_frames = self.restore_episode_info["frame"].pop()
         self.replay_frame()
         if self.engine.only_reset_when_replay:
@@ -85,7 +126,9 @@ class ReplayManager(BaseManager):
             self.restore_manager_states(self.current_frame.manager_info)
             # Do special treatment to map manager
             self.engine.map_manager.current_map = self.current_map
-            self.engine.map_manager.maps[self.engine.global_seed] = self.current_map
+            if hasattr(self.engine.map_manager, 'maps'):
+                # Only PGMapManager has the maps dict
+                self.engine.map_manager.maps[self.engine.global_seed] = self.current_map
 
     def restore_policy_states(self, policy_spawn_infos):
         # restore agent policy
@@ -144,10 +187,14 @@ class ReplayManager(BaseManager):
             self.current_name_to_record_name[obj.name] = name
             self.record_name_to_current_name[name] = obj.name
             if issubclass(config[ObjectState.CLASS], BaseVehicle):
-                obj.navigation.set_route(
-                    self.current_frame.step_info[name]["spawn_road"],
-                    self.current_frame.step_info[name]["destination"][-1]
-                )
+                # For PGMap, set route using spawn_road and destination
+                # For ScenarioMap, these fields may not exist
+                step_info = self.current_frame.step_info.get(name, {})
+                if "spawn_road" in step_info and "destination" in step_info:
+                    obj.navigation.set_route(
+                        step_info["spawn_road"],
+                        step_info["destination"][-1]
+                    )
         if self.engine.only_reset_when_replay:
             # for generation policies
             self.restore_policy_states(self.current_frame.policy_spawn_info)

@@ -264,8 +264,8 @@ BASE_DEFAULT_CONFIG = dict(
     # Please see Documentation: Record and Replay for more details
     # When replay_episode is True, the episode metadata will be recorded
     record_episode=False,
-    # The value should be None or the log data. If it is the later one, the simulator will replay logged scenario
-    replay_episode=None,
+    # The value should be {} or the log data. If it is the later one, the simulator will replay logged scenario
+    replay_episode={},
     # When set to True, the replay system will only reconstruct the first frame from the logged scenario metadata
     only_reset_when_replay=False,
     # If True, when creating and replaying object trajectories, use the same ID as in dataset
@@ -290,7 +290,7 @@ class BaseEnv(gym.Env):
             config = {}
         self.logger = get_logger()
         set_log_level(config.get("log_level", logging.DEBUG if config.get("debug", False) else logging.INFO))
-        merged_config = self.default_config().update(config, False, ["agent_configs", "sensors"])
+        merged_config = self.default_config().update(config, False, ["agent_configs", "sensors", "replay_episode"])
         global_config = self._post_process_config(merged_config)
 
         self.config = global_config

@@ -328,7 +328,7 @@ class BaseEngine(EngineCore, Randomizable):
             self.addTask(self.report_body_nums, "report_num")
 
         # Update record replay
-        self.replay_episode = True if self.global_config["replay_episode"] is not None else False
+        self.replay_episode = True if len(self.global_config["replay_episode"]) > 0 else False
         self.record_episode = self.global_config["record_episode"]
         self.only_reset_when_replay = self.global_config["only_reset_when_replay"]
 
