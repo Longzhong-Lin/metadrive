@@ -1,5 +1,7 @@
 import logging
+import os
 import time
+from PIL import Image
 from collections import defaultdict
 from typing import Union, Dict, AnyStr, Optional, Tuple, Callable
 
@@ -29,6 +31,7 @@ from metadrive.obs.state_obs import LidarStateObservation
 from metadrive.policy.env_input_policy import EnvInputPolicy
 from metadrive.scenario.utils import convert_recorded_scenario_exported
 from metadrive.utils import Config, merge_dicts, get_np_random, concat_step_infos
+from metadrive.utils.doc_utils import generate_gif
 from metadrive.version import VERSION
 
 BASE_DEFAULT_CONFIG = dict(
@@ -315,6 +318,9 @@ class BaseEnv(gym.Env):
         self.episode_rewards = defaultdict(float)
         self.episode_lengths = defaultdict(int)
 
+        # 3D render recording
+        self._3d_screen_frames = []
+
         # press p to stop
         self.in_stop = False
 
@@ -489,19 +495,23 @@ class BaseEnv(gym.Env):
         self.logger.warning("Done function is not implemented. Return Done = False", extra={"log_once": True})
         return False, {}
 
-    def render(self, text: Optional[Union[dict, str]] = None, mode=None, *args, **kwargs) -> Optional[np.ndarray]:
+    def render(self, text: Optional[Union[dict, str]] = None, mode=None, screen_record=False, *args, **kwargs) -> Optional[np.ndarray]:
         """
         This is a pseudo-render function, only used to update onscreen message when using panda3d backend
         :param text: text to show
         :param mode: start_top_down rendering candidate parameter is ["top_down", "topdown", "bev", "birdview"]
+        :param screen_record: whether to record frames (for both 2D top-down and 3D rendering)
         :return: None or top_down image
         """
 
         if mode in ["top_down", "topdown", "bev", "birdview"]:
-            ret = self._render_topdown(text=text, *args, **kwargs)
+            ret = self._render_topdown(text=text, screen_record=screen_record, *args, **kwargs)
             return ret
         if self.config["use_render"] or self.engine.mode != RENDER_MODE_NONE:
             self.engine.render_frame(text)
+            # Record 3D render frames if screen_record is enabled
+            if screen_record:
+                self._capture_3d_frame()
         else:
             self.logger.warning(
                 "Panda Rendering is off now, can not render. Please set config['use_render'] = True!",
@@ -540,6 +550,7 @@ class BaseEnv(gym.Env):
         self.dones = {agent_id: False for agent_id in self.agents.keys()}
         self.episode_rewards = defaultdict(float)
         self.episode_lengths = defaultdict(int)
+        self._3d_screen_frames.clear()  # Clear 3D frames at reset
 
         assert (len(self.agents) == self.num_agents) or (self.num_agents == -1), \
             "Agents: {} != Num_agents: {}".format(len(self.agents), self.num_agents)
@@ -660,6 +671,61 @@ class BaseEnv(gym.Env):
             file_name = "main_index_{}_step_{}_{}.png".format(self.current_seed, self.engine.episode_step, time.time())
         self._capture_img.write(file_name)
         self.logger.info("Image is saved at: {}".format(file_name))
+
+    def _capture_3d_frame(self):
+        """
+        Internal method to capture the current 3D render frame and store it in memory.
+        The frame is stored as a numpy array.
+        """
+        if not hasattr(self, "_capture_img"):
+            self._capture_img = PNMImage()
+        self.engine.win.getScreenshot(self._capture_img)
+        # Convert PNMImage to numpy array
+        width = self._capture_img.getXSize()
+        height = self._capture_img.getYSize()
+        # Create array with shape (height, width, 3) to match PIL's expected format
+        frame = np.empty((height, width, 3), dtype=np.uint8)
+        for y in range(height):
+            for x in range(width):
+                frame[y, x, 0] = int(self._capture_img.getRed(x, y) * 255)
+                frame[y, x, 1] = int(self._capture_img.getGreen(x, y) * 255)
+                frame[y, x, 2] = int(self._capture_img.getBlue(x, y) * 255)
+        self._3d_screen_frames.append(frame)
+
+    def generate_3d_gif(self, gif_name="3d_render.gif", duration=30, save_frames=False, frames_dir=None):
+        """
+        Generate a GIF from recorded 3D render frames and optionally save individual frames.
+
+        Args:
+            gif_name: Output filename for the GIF (must end with .gif)
+            duration: Duration of each frame in milliseconds
+            save_frames: If True, save individual frames as PNG files
+            frames_dir: Directory to save frames. If None and save_frames=True,
+                creates a directory named after the GIF file (without .gif extension)
+        """
+        if not self._3d_screen_frames:
+            self.logger.warning("No 3D frames recorded. Did you set screen_record=True in render()?")
+            return
+
+        # Generate GIF
+        generate_gif(self._3d_screen_frames, gif_name, is_pygame_surface=False, duration=duration)
+
+        # Save individual frames if requested
+        if save_frames:
+            # Determine frames directory
+            if frames_dir is None:
+                frames_dir = gif_name.replace(".gif", "_frames")
+
+            # Create directory if it doesn't exist
+            os.makedirs(frames_dir, exist_ok=True)
+
+            # Save each frame as PNG
+            for idx, frame in enumerate(self._3d_screen_frames):
+                frame_filename = os.path.join(frames_dir, f"{idx:04d}.png")
+                img = Image.fromarray(frame)
+                img.save(frame_filename)
+
+            self.logger.info(f"Saved {len(self._3d_screen_frames)} frames to: {frames_dir}")
 
     def for_each_agent(self, func, *args, **kwargs):
         return self.agent_manager.for_each_active_agents(func, *args, **kwargs)
