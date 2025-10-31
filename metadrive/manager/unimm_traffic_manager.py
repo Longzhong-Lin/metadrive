@@ -291,7 +291,7 @@ class UniMMTrafficManager(ScenarioTrafficManager):
             self._scenario_id_to_agent_idx[scenario_id] = idx
             self._agent_idx_to_scenario_id[idx] = scenario_id
 
-        logger.info(f"Built agent mapping: {len(agent_list)} agents (1 ego + {len(all_agent_ids)} traffic)")
+        logger.debug(f"Built agent mapping: {len(agent_list)} agents (1 ego + {len(all_agent_ids)} traffic)")
 
     def _update_sim_data_with_current_world_state(self, frame_index):
         """Update a specific frame of sim_data with current world state (including ego)."""
