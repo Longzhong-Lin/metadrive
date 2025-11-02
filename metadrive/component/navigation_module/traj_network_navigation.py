@@ -36,7 +36,7 @@ class TrajNetworkNavigation(BaseNavigation):
     # Lookahead distances (meters) - can be overridden via vehicle_config
     LOOKAHEAD_DISTANCE_1 = 20.0  # First checkpoint lookahead distance
     LOOKAHEAD_DISTANCE_2 = 40.0  # Second checkpoint lookahead distance
-    CURVATURE_LOOKAHEAD = 30.0  # Distance for curvature estimation
+    CURVATURE_DISTANCE = 30.0  # Distance for curvature estimation
 
     def __init__(
         self,
@@ -60,7 +60,7 @@ class TrajNetworkNavigation(BaseNavigation):
         if vehicle_config is not None:
             self.LOOKAHEAD_DISTANCE_1 = vehicle_config.get('lookahead_distance_1', self.LOOKAHEAD_DISTANCE_1)
             self.LOOKAHEAD_DISTANCE_2 = vehicle_config.get('lookahead_distance_2', self.LOOKAHEAD_DISTANCE_2)
-            self.CURVATURE_LOOKAHEAD = vehicle_config.get('curvature_lookahead', self.CURVATURE_LOOKAHEAD)
+            self.CURVATURE_DISTANCE = vehicle_config.get('curvature_lookahead', self.CURVATURE_DISTANCE)
 
         # Tracking for route completion and localization
         self._route_completion = 0.0
@@ -239,39 +239,31 @@ class TrajNetworkNavigation(BaseNavigation):
         """
         Estimate curvature at a point on the trajectory.
 
-        We approximate curvature by looking at the angular change over a lookahead distance.
         Returns 3 values matching NodeNetworkNavigation format:
         - bend_radius: normalized radius of curvature [0, 1]
-        - direction: bending direction [-1 for clockwise, +1 for counter-clockwise]
-        - angle: total angular change over the sample distance
+        - direction: bending direction [0 for clockwise, 1 for counter-clockwise]
+        - angle: total angular change over the sample distance [0, 1]
 
         Args:
-            longitudinal: Position along trajectory
+            longitudinal: Position along trajectory (checkpoint position)
             trajectory: The reference trajectory (InterpolatingLine)
 
         Returns:
             List of 3 float values [bend_radius, direction, angle]
         """
-        # Use configurable lookahead distance for curvature estimation
-        sample_len = self.CURVATURE_LOOKAHEAD
-
-        # Ensure we stay within trajectory bounds
-        long_start = max(0, longitudinal)
-        long_end = min(trajectory.length, longitudinal + sample_len)
+        # Get start and end points for curvature estimation
+        long_start = max(0, longitudinal - self.CURVATURE_DISTANCE)
+        long_end = min(trajectory.length, longitudinal + self.CURVATURE_DISTANCE)
 
         # Get headings at start and end
-        try:
-            heading_start = trajectory.heading_theta_at(long_start)
-            heading_end = trajectory.heading_theta_at(long_end)
-        except (AttributeError, IndexError):
-            # If trajectory doesn't support heading queries, assume straight
-            return [0.0, 0.5, 0.5]  # straight road
+        heading_start = trajectory.heading_theta_at(long_start)
+        heading_end = trajectory.heading_theta_at(long_end)
 
         # Calculate angular change
         total_angle_change = wrap_to_pi(heading_end - heading_start)
 
         # If nearly straight, return zero curvature
-        if abs(total_angle_change) < 0.01:  # ~0.5 degrees
+        if abs(total_angle_change) < np.deg2rad(3.0): # 3 degrees threshold
             return [0.0, 0.5, 0.5]
 
         # Estimate radius of curvature
@@ -285,22 +277,22 @@ class TrajNetworkNavigation(BaseNavigation):
 
         # Normalize radius to [0, 1] range
         # Use typical road curvature bounds from BlockParameterSpace
-        max_radius = BlockParameterSpace.CURVE.get(Parameter.radius, type('obj', (), {'max': 100})).max
-        normalized_radius = clip(radius / max_radius, 0.0, 1.0)
+        max_radius = BlockParameterSpace.CURVE[Parameter.radius].max
+        lane_correction = self.get_current_lane_num() * self.get_current_lane_width()
+        normalized_radius = clip(radius / (max_radius + lane_correction), 0.0, 1.0)
 
         # Determine turn direction
-        # Positive angle change = left turn (counter-clockwise)
-        # Negative angle change = right turn (clockwise)
-        direction = 1.0 if total_angle_change > 0 else -1.0
+        direction = -1.0 if total_angle_change > 0 else 1.0
 
         # Normalize direction to [0, 1] where 0 = clockwise, 1 = counter-clockwise
         normalized_direction = clip((direction + 1) / 2, 0.0, 1.0)
 
         # Normalize angle to [0, 1] range
         # Use typical maximum curve angle from BlockParameterSpace
-        max_angle = BlockParameterSpace.CURVE.get(Parameter.angle, type('obj', (), {'max': np.pi/2})).max
+        max_angle_deg = BlockParameterSpace.CURVE[Parameter.angle].max
+        angle_deg = np.rad2deg(abs(total_angle_change))
         normalized_angle = clip(
-            (abs(total_angle_change) / max_angle + 1) / 2,
+            (angle_deg / max_angle_deg + 1) / 2,
             0.0,
             1.0
         )
