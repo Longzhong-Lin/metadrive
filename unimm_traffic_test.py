@@ -62,6 +62,9 @@ class MetricsCollector:
         self.route_completion = 0.0
         self.steps = 0
 
+        # Traffic speeds
+        self.traffic_speeds = []
+
     def update(self, info: Dict):
         """Update metrics at each step.
 
@@ -100,6 +103,9 @@ class MetricsCollector:
         self.route_completion = info.get('route_completion', 0.0)
         self.steps += 1
 
+        # Traffic speeds
+        self.traffic_speeds.append(info.get('traffic_speed', 0.0))
+
     def get_summary(self) -> Dict[str, Any]:
         """Get summary statistics of collected metrics.
 
@@ -129,6 +135,9 @@ class MetricsCollector:
             # Progress
             'route_completion': self.route_completion,
             'steps': self.steps,
+
+            # Traffic speed
+            'traffic_speed': np.mean(self.traffic_speeds),
         }
 
 
@@ -237,6 +246,17 @@ def test_single_combination(
                 # Step environment
                 obs, reward, terminated, truncated, info = env.step([0, 0])  # Policy handles action
 
+                # Calculate traffic average speed
+                traffic_objects = [
+                    obj for obj_id, obj in env.engine.traffic_manager.spawned_objects.items()
+                    if obj_id != env.agent.id
+                ]
+                if len(traffic_objects) > 0:
+                    traffic_speed = np.mean([obj.speed for obj in traffic_objects])
+                else:
+                    traffic_speed = 0.0
+                info['traffic_speed'] = traffic_speed
+
                 # Update metrics
                 metrics.update(info)
 
@@ -304,6 +324,10 @@ def aggregate_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         'route_completion_mean': df['route_completion'].mean(),
         'route_completion_std': df['route_completion'].std(),
         'num_steps': df['steps'].mean(),
+
+        # Traffic speed statistics
+        'traffic_speed_mean': df['traffic_speed'].mean(),
+        'traffic_speed_std': df['traffic_speed'].std(),
     }
 
     return agg
@@ -357,6 +381,7 @@ def save_results(
             'offroad_rate': f"{stats.get('offroad_rate', 0):.3f}",
             'success_rate': f"{stats.get('success_rate', 0):.3f}",
             'avg_progress': f"{stats.get('route_completion_mean', 0):.3f}",
+            'traffic_speed': f"{stats.get('traffic_speed_mean', 0):.2f}",
         }
         summary_rows.append(row)
 
@@ -366,11 +391,11 @@ def save_results(
     print(f"Saved summary table to {summary_path}")
 
     # Print summary table
-    print("\n" + "="*80)
+    print("\n" + "="*100)
     print("SUMMARY TABLE")
-    print("="*80)
+    print("="*100)
     print(summary_df.to_string(index=False))
-    print("="*80)
+    print("="*100)
 
 
 def main():
@@ -472,6 +497,7 @@ def main():
         print(f"  Offroad rate: {agg.get('offroad_rate', 0):.2%}")
         print(f"  Success rate: {agg.get('success_rate', 0):.2%}")
         print(f"  Avg progress: {agg.get('route_completion_mean', 0):.2%}")
+        print(f"  Traffic speed: {agg.get('traffic_speed_mean', 0):.2f} m/s")
 
     elapsed_time = time.time() - start_time
     print(f"\nTotal testing time: {elapsed_time:.2f} seconds")
