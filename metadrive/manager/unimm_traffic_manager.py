@@ -107,21 +107,27 @@ class UniMMTrafficManager(ScenarioTrafficManager):
         self.map_enc = self.model.encoder.map_encoder(self.sim_data)
         self.temporal_cache = None
 
+        # Mark that we're in reset, so after_step should not apply predictions
+        self._in_reset = True
+
     def after_step(self, *args, **kwargs):
         """Called every frame at 10Hz"""
 
+        # Skip prediction during reset (when after_step is called from env.reset())
+        if hasattr(self, '_in_reset') and self._in_reset:
+            self._in_reset = False
+            return dict(default_agent=dict(replay_done=False))
+
         frame_offset = self.episode_step - self.prediction_start_frame
-        
-        # Update sim_data with current simulation state
-        if self.predictions is not None:
-            self._update_sim_data_with_current_world_state(frame_offset)
         
         # Update UniMM predictions and apply to simulation
         if self.predictions is None or frame_offset >= self.model.num_execution_steps:
             self._update_predictions()
             self._apply_predictions(0)
+            self._update_ego_in_sim_data(0)
         else:
             self._apply_predictions(frame_offset)
+            self._update_ego_in_sim_data(frame_offset)
 
         # TODO: Handle vehicle spawning/despawning during episode
 
@@ -293,30 +299,29 @@ class UniMMTrafficManager(ScenarioTrafficManager):
 
         logger.debug(f"Built agent mapping: {len(agent_list)} agents (1 ego + {len(all_agent_ids)} traffic)")
 
-    def _update_sim_data_with_current_world_state(self, frame_index):
-        """Update a specific frame of sim_data with current world state (including ego)."""
+    def _update_ego_in_sim_data(self, frame_offset):
+        """Update only ego vehicle in sim_data from simulation state.
+
+        Traffic agents' sim_data keeps using prediction values as ground truth.
+        This is called after _apply_predictions() to sync ego's actual state.
+
+        Args:
+            frame_offset: Offset from prediction_start_frame (0 to num_execution_steps-1)
+        """
+        # sim_data structure: [history_frame, pred_frame_0, pred_frame_1, ..., pred_frame_N-1]
+        # frame_offset=0 corresponds to sim_data[:, 1] (first prediction frame)
+        sim_data_idx = frame_offset + 1
+        ego_idx = self._scenario_id_to_agent_idx[self.sdc_scenario_id]
         
-        for scenario_id, agent_idx in self._scenario_id_to_agent_idx.items():
-            # Find vehicle by scenario_id
-            if scenario_id == self.sdc_scenario_id:
-                vehicle = self.ego_vehicle
-            elif scenario_id in self._scenario_id_to_obj_id:
-                obj_id = self._scenario_id_to_obj_id[scenario_id]
-                if obj_id not in self.spawned_objects:
-                    continue
-                vehicle = self.spawned_objects[obj_id]
-            else:
-                continue
-
-            # Update specified frame of sim_data
-            pos = vehicle.position  # (x, y)
-            self.sim_data['agent']['position'][agent_idx, frame_index] = torch.tensor(pos, dtype=torch.float, device=self.device)
-
-            heading = vehicle.heading_theta
-            self.sim_data['agent']['heading'][agent_idx, frame_index] = torch.tensor(heading, dtype=torch.float, device=self.device)
-
-            vel = vehicle.velocity  # (vx, vy)
-            self.sim_data['agent']['velocity'][agent_idx, frame_index] = torch.tensor(vel, dtype=torch.float, device=self.device)
+        self.sim_data['agent']['position'][ego_idx, sim_data_idx] = torch.tensor(
+            self.ego_vehicle.position, dtype=torch.float, device=self.device
+        )
+        self.sim_data['agent']['heading'][ego_idx, sim_data_idx] = torch.tensor(
+            self.ego_vehicle.heading_theta, dtype=torch.float, device=self.device
+        )
+        self.sim_data['agent']['velocity'][ego_idx, sim_data_idx] = torch.tensor(
+            self.ego_vehicle.velocity, dtype=torch.float, device=self.device
+        )
 
     @torch.no_grad()
     def _update_predictions(self):
