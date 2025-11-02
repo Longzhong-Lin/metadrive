@@ -120,11 +120,11 @@ try:
 
         # Generate GIF
         if REPLAY_3D:
-            gif_path = os.path.join(EXP_DIR, f"scenario-{SCENARIO_IDX}_{scenario_id}_replay_3d.gif")
+            gif_path = f"{REPLAY_FILE.split('.')[0]}_replay_3d.gif"
             env.generate_3d_gif(gif_path, duration=100, save_frames=True)
             print(f"✓ 3D GIF saved to: {gif_path}")
         else:
-            gif_path = os.path.join(EXP_DIR, f"scenario-{SCENARIO_IDX}_{scenario_id}_replay.gif")
+            gif_path = f"{REPLAY_FILE.split('.')[0]}_replay.gif"
             env.top_down_renderer.generate_gif(gif_path, duration=100)
             print(f"✓ GIF saved to: {gif_path}")
     
